@@ -82,10 +82,12 @@ const MINIMAX_PITCH_MAX = 12;
 // MiniMax voice_setting.vol：合成侧的源音量增益（官方默认 1.0）。
 // 移动端听感普遍比预期小——TTS 输出是单声道，iOS 上角色语音又走铃声/语音流，
 // 硬件音量键根本够不着它，用户反馈"要把耳机音量拉到最大才是正常音量"。
-// 这里给 1.5× 的默认补偿，配置页可在 0.5-2.0 之间自行调节，调回 1.0× 即官方原声；
-// 上限保守取 2.0，再高容易削波失真。此前该参数被写死为 1.0，界面没有任何入口。
+// 这里给 1.5× 的默认补偿，配置页可在 0.5-2.5 之间自行调节，调回 1.0× 即官方原声。
+// 上限放到 2.5×：有用户实测 2.0× 仍偏小（不同音色/设备的源电平差异很大，
+// 克隆音色尤其容易偏轻），故留出余量；削波风险由用户按试听自行判断。
+// 此前该参数被写死为 1.0，界面没有任何入口。
 const MINIMAX_VOLUME_MIN = 0.5;
-const MINIMAX_VOLUME_MAX = 2.0;
+const MINIMAX_VOLUME_MAX = 2.5;
 export const DEFAULT_SPEECH_VOLUME = 1.5;
 
 function normalizeMinimaxSpeed(speed: number | undefined): number {

@@ -27,9 +27,9 @@ const MINIMAX_PITCH_MAX = 12;
 const MINIMAX_PITCH_STEP = 1;
 const DEFAULT_SPEECH_PITCH = 0;
 // Minimax voice_setting.vol：合成侧源音量增益。默认 1.5×（说明见 lib/tts-service.ts），
-// 调回 1.0× 即官方原声；上限保守取 2.0×，再高容易削波失真。
+// 调回 1.0× 即官方原声；上限 2.5×，给「2.0× 仍偏小」的音色/设备留余量。
 const MINIMAX_VOLUME_MIN = 0.5;
-const MINIMAX_VOLUME_MAX = 2.0;
+const MINIMAX_VOLUME_MAX = 2.5;
 const MINIMAX_VOLUME_STEP = 0.1;
 const VOICE_PROVIDER_OPTIONS = [
     { value: "OpenAI", label: "OpenAI TTS" },
@@ -848,7 +848,7 @@ export function VoiceSettings() {
                                                     />
                                                     <div className="relative h-4 px-1 text-xs text-gray-500" aria-hidden="true">
                                                         <span className="absolute left-1 whitespace-nowrap">{MINIMAX_VOLUME_MIN.toFixed(1)}×</span>
-                                                        <span className="absolute whitespace-nowrap" style={{ left: "33.333%", transform: "translateX(-50%)" }}>1.0× 官方默认</span>
+                                                        <span className="absolute whitespace-nowrap" style={{ left: "25%", transform: "translateX(-50%)" }}>1.0× 官方默认</span>
                                                         <span className="absolute right-1 whitespace-nowrap">{MINIMAX_VOLUME_MAX.toFixed(1)}×</span>
                                                     </div>
                                                     <span className="menu-desc ml-1">合成侧的源音量（MiniMax vol）。默认 {DEFAULT_SPEECH_VOLUME.toFixed(1)}× 是给移动端/耳机听感偏小做的补偿；觉得爆音或太吵就调回 1.0×，改完用上面的试听对比。</span>
