@@ -171,6 +171,9 @@ export type VoiceApiConfig = {
     speechSpeed?: number;
     /** Minimax voice_setting.pitch（半音，±12）。缺省保持旧行为（0，原声）。 */
     speechPitch?: number;
+    /** Minimax voice_setting.vol（合成侧源音量增益，官方默认 1.0）。
+     *  缺省走 DEFAULT_SPEECH_VOLUME（1.5×），补偿移动端/耳机上「音量要开到最大才正常」的听感。 */
+    speechVolume?: number;
     customVoices?: { id: string; name: string; createdAt?: number }[];
     enableSTT: boolean;
     enableTTS: boolean;
