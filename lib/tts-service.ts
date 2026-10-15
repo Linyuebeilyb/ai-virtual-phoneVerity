@@ -204,16 +204,23 @@ let _sharedAudio: HTMLAudioElement | null = null;
 let _audioUnlocked = false;
 let _unlockListenerInstalled = false;
 
-// ── In-app TTS volume (0..1) ──
+// ── In-app TTS volume (0..TTS_VOLUME_MAX) ──
 // iOS plays Web Audio on the ringer/voice stream, so the hardware volume keys
 // don't control character speech. This in-app gain does. Synced to localStorage.
+//
+// 为什么允许 >1：TTS 源音频通常峰值已接近满刻度、但平均电平偏低，听感就是"小"。
+// 服务商侧的音量参数（MiniMax voice_setting.vol）实测在部分模型/音色上会被忽略，
+// 所以放大能力必须放在播放链路上——gain 之后接限幅器，增益拉高时峰值被兜住、
+// 平均电平抬起来，主观响度才真正上去。
+// 兼容性：1.0 仍是"原始音量"，旧存值（0..1）语义不变。
+export const TTS_VOLUME_MAX = 3;
 const TTS_VOLUME_KEY = "ai_phone_tts_volume_v1";
 let _ttsVolume = ((): number => {
     if (typeof window === "undefined") return 1;
     try {
         const raw = window.localStorage.getItem(TTS_VOLUME_KEY);
         const v = raw == null ? 1 : Number(raw);
-        return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
+        return Number.isFinite(v) ? Math.min(TTS_VOLUME_MAX, Math.max(0, v)) : 1;
     } catch { return 1; }
 })();
 // Live gain node of the currently-playing AudioContext clip, so the slider can
@@ -225,10 +232,11 @@ export function getTtsVolume(): number {
 }
 
 export function setTtsVolume(volume: number): void {
-    _ttsVolume = Math.min(1, Math.max(0, volume));
+    _ttsVolume = Math.min(TTS_VOLUME_MAX, Math.max(0, volume));
     try { window.localStorage.setItem(TTS_VOLUME_KEY, String(_ttsVolume)); } catch { /* ignore */ }
     if (_activeGain) { try { _activeGain.gain.value = _ttsVolume; } catch { /* ignore */ } }
-    if (_sharedAudio) { try { _sharedAudio.volume = _ttsVolume; } catch { /* ignore */ } }
+    // 媒体元素音量上限是 1，>1 的增益只有 Web Audio 路径吃得到。
+    if (_sharedAudio) { try { _sharedAudio.volume = Math.min(1, _ttsVolume); } catch { /* ignore */ } }
 }
 
 // ── 通话音频会话开关 ──
@@ -372,7 +380,8 @@ function playAudioBlobElement(blob: Blob): { promise: Promise<void>; abort: () =
     const url = URL.createObjectURL(blob);
     const audio = getSharedAudio();
     audio.muted = false;
-    audio.volume = _ttsVolume;
+    // 媒体元素音量上限就是 1，无法放大；>1 的增益只有 Web Audio 路径吃得到。
+    audio.volume = Math.min(1, _ttsVolume);
     audio.src = url;
 
     let settled = false;
@@ -412,6 +421,7 @@ export function playAudioBlob(blob: Blob): { promise: Promise<void>; abort: () =
     let source: AudioBufferSourceNode | null = null;
 
     let gain: GainNode | null = null;
+    let limiter: DynamicsCompressorNode | null = null;
     let fallbackAbort: (() => void) | null = null;
 
     const cleanupWebAudio = () => {
@@ -422,6 +432,8 @@ export function playAudioBlob(blob: Blob): { promise: Promise<void>; abort: () =
             source = null;
         }
         if (gain) { try { gain.disconnect(); } catch {} }
+        if (limiter) { try { limiter.disconnect(); } catch {} }
+        limiter = null;
         if (_activeGain === gain) _activeGain = null;
         gain = null;
         // Suspend so iOS hands the audio session back to the microphone.
@@ -453,11 +465,19 @@ export function playAudioBlob(blob: Blob): { promise: Promise<void>; abort: () =
                 if (settled) return;
                 source = ctx.createBufferSource();
                 source.buffer = audioBuffer;
-                // Route through a gain node so the in-app volume slider applies.
+                // Route through a gain node so the in-app volume slider applies,
+                // then a limiter so gain >1 boosts loudness instead of clipping.
                 gain = ctx.createGain();
                 gain.gain.value = _ttsVolume;
+                limiter = ctx.createDynamicsCompressor();
+                limiter.threshold.value = -1.5;  // 峰值天花板：约 -1.5dBFS
+                limiter.knee.value = 0;
+                limiter.ratio.value = 20;        // 接近硬限幅
+                limiter.attack.value = 0.003;
+                limiter.release.value = 0.1;
                 source.connect(gain);
-                gain.connect(ctx.destination);
+                gain.connect(limiter);
+                limiter.connect(ctx.destination);
                 _activeGain = gain;
                 source.onended = finalize;
                 source.start();

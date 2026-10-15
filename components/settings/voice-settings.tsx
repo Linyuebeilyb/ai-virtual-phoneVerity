@@ -5,7 +5,7 @@ import { Plus, Play, Pause, AlertCircle, RefreshCw, FileEdit, Trash2, X, Check, 
 import { SettingsContext } from "../phone-settings-app";
 import type { VoiceApiConfig } from "@/lib/settings-types";
 import { loadVoiceConfigs, saveVoiceConfigs } from "@/lib/settings-storage";
-import { synthesizeSpeech, getTtsVolume, setTtsVolume, DEFAULT_SPEECH_VOLUME } from "@/lib/tts-service";
+import { synthesizeSpeech, playAudioBlob, getTtsVolume, setTtsVolume, DEFAULT_SPEECH_VOLUME, TTS_VOLUME_MAX } from "@/lib/tts-service";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
 import { Alert } from "@/components/ui/feedback";
@@ -249,8 +249,9 @@ export function VoiceSettings() {
     const [manualModelIds, setManualModelIds] = useState<Record<string, boolean>>({});
     const [manualVoiceIds, setManualVoiceIds] = useState<Record<string, boolean>>({});
     const [isLoaded, setIsLoaded] = useState(false);
-    const audioRef = useRef<HTMLAudioElement | null>(null);
-    // 应用内播放音量（0-1）：与通话界面右上角小喇叭共用同一个值（lib/tts-service.ts 里
+    // 试听播放的中断句柄（走 Web Audio 链路，见 togglePreview）
+    const previewAbortRef = useRef<(() => void) | null>(null);
+    // 应用内播放音量（0-TTS_VOLUME_MAX）：与通话界面右上角小喇叭共用同一个值（lib/tts-service.ts 里
     // 的 _ttsVolume，localStorage 记忆）。此前只能在通话界面调、滑杆几秒后自动收起，
     // 误触拖低之后就再也不知道该去哪调回来——这是「语音莫名其妙变小」的常见来源。
     const [playbackVolume, setPlaybackVolume] = useState(1);
@@ -532,17 +533,17 @@ export function VoiceSettings() {
 
     const togglePreview = async (config: VoiceApiConfig) => {
         if (playingVoiceId === config.id) {
-            if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current = null;
+            if (previewAbortRef.current) {
+                previewAbortRef.current();
+                previewAbortRef.current = null;
             }
             setPlayingVoiceId(null);
             return;
         }
 
-        if (audioRef.current) {
-            audioRef.current.pause();
-            audioRef.current = null;
+        if (previewAbortRef.current) {
+            previewAbortRef.current();
+            previewAbortRef.current = null;
         }
 
         setPlayingVoiceId(config.id);
@@ -556,27 +557,19 @@ export function VoiceSettings() {
                 config,
             );
             if (!blob) throw new Error("当前语音配置未返回真实音频");
-            const url = URL.createObjectURL(blob);
 
-            const audio = new Audio(url);
-            // 试听跟随应用内播放音量，便于直接听出「实际对话时有多响」；音量增益(vol)本身
-            // 由服务端合成，试听同样生效，所以这里能直接 A/B 对比 1.0× 与 1.5×。
-            audio.volume = getTtsVolume();
-            audioRef.current = audio;
-            audio.onended = () => {
-                setPlayingVoiceId(null);
-                audioRef.current = null;
-                URL.revokeObjectURL(url);
-            };
-            audio.onerror = () => {
-                setPlayingVoiceId(null);
-                audioRef.current = null;
-                URL.revokeObjectURL(url);
-            };
-            await audio.play();
+            // 走和通话/播报同一条 Web Audio 播放链路（playAudioBlob），这样试听听到的
+            // 就是实际对话时的音量：媒体元素(HTMLAudioElement)的音量上限是 1，无法放大，
+            // 用 <audio> 试听会听不出播放音量滑杆 >100% 的效果。
+            const playback = playAudioBlob(blob);
+            previewAbortRef.current = playback.abort;
+            await playback.promise;
+            previewAbortRef.current = null;
+            setPlayingVoiceId(null);
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
             alert(`语音测试失败: ${msg}`);
+            previewAbortRef.current = null;
             setPlayingVoiceId(null);
         }
     };
@@ -591,7 +584,9 @@ export function VoiceSettings() {
 
             {/* 角色语音播放音量：与通话界面右上角的小喇叭共用同一个值（localStorage 记忆）。
                 iOS 上角色语音走铃声/语音流，硬件音量键够不着它，只有这个增益说了算；
-                此前仅通话界面能调，这里补一个入口，避免误触拖低后再也找不到。 */}
+                此前仅通话界面能调，这里补一个入口，避免误触拖低后再也找不到。
+                量程放到 300%：TTS 源音频常是"峰值够高、平均电平低"，服务商侧的音量参数
+                部分模型会忽略，真正能放大的只有这条链路（>100% 时限幅器兜底防削波）。 */}
             <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between px-1">
                     <label className="menu-desc">角色语音播放音量</label>
@@ -600,8 +595,8 @@ export function VoiceSettings() {
                 <input
                     type="range"
                     min={0}
-                    max={1}
-                    step={0.01}
+                    max={TTS_VOLUME_MAX}
+                    step={0.05}
                     value={playbackVolume}
                     onChange={(e) => {
                         const v = Number(e.target.value);
@@ -612,6 +607,7 @@ export function VoiceSettings() {
                     aria-label="角色语音播放音量"
                 />
                 <span className="menu-desc ml-1">与通话界面右上角喇叭是同一个音量，改动即时生效并长期记忆；下方试听与聊天播报都用它。</span>
+                <span className="menu-desc ml-1">100% = 原始音量。声音偏小时往上拉（播放链路会自动限幅，不会破音）；拉满仍嫌小就说明源音频电平太低，可换个音色或重新录制克隆样本。</span>
             </div>
 
             {configs.length === 0 ? (
@@ -851,7 +847,8 @@ export function VoiceSettings() {
                                                         <span className="absolute whitespace-nowrap" style={{ left: "25%", transform: "translateX(-50%)" }}>1.0× 官方默认</span>
                                                         <span className="absolute right-1 whitespace-nowrap">{MINIMAX_VOLUME_MAX.toFixed(1)}×</span>
                                                     </div>
-                                                    <span className="menu-desc ml-1">合成侧的源音量（MiniMax vol）。默认 {DEFAULT_SPEECH_VOLUME.toFixed(1)}× 是给移动端/耳机听感偏小做的补偿；觉得爆音或太吵就调回 1.0×，改完用上面的试听对比。</span>
+                                                    <span className="menu-desc ml-1">合成侧的源音量（MiniMax vol）。默认 {DEFAULT_SPEECH_VOLUME.toFixed(1)}× 是给移动端/耳机听感偏小做的补偿；调回 1.0× 即官方原声。</span>
+                                                    <span className="menu-desc ml-1">注意：部分模型/音色会忽略该参数（实测调 2.0× 与 2.5× 无差异即属此情况）。调整无效果时请改用页面上方的「角色语音播放音量」——那条走播放链路，一定生效。</span>
                                                 </div>
                                                 <div className="flex flex-col gap-1 mt-1">
                                                     <label className="menu-desc ml-1">朗读语言</label>

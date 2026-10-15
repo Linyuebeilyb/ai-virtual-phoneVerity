@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getTtsVolume, setTtsVolume } from "@/lib/tts-service";
+import { getTtsVolume, setTtsVolume, TTS_VOLUME_MAX } from "@/lib/tts-service";
 
 /**
  * In-app volume control for character speech during calls. iOS plays the TTS on a
@@ -70,8 +70,8 @@ export function CallVolumeControl() {
           type="range"
           className="call-volume-slider"
           min={0}
-          max={1}
-          step={0.01}
+          max={TTS_VOLUME_MAX}
+          step={0.05}
           value={volume}
           aria-label="音量"
           onChange={(e) => onChange(Number(e.target.value))}
