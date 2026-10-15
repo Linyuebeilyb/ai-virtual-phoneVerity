@@ -79,6 +79,15 @@ const MINIMAX_SPEED_MAX = 2.0;
 const MINIMAX_PITCH_MIN = -12;
 const MINIMAX_PITCH_MAX = 12;
 
+// MiniMax voice_setting.vol：合成侧的源音量增益（官方默认 1.0）。
+// 移动端听感普遍比预期小——TTS 输出是单声道，iOS 上角色语音又走铃声/语音流，
+// 硬件音量键根本够不着它，用户反馈"要把耳机音量拉到最大才是正常音量"。
+// 这里给 1.5× 的默认补偿，配置页可在 0.5-2.0 之间自行调节，调回 1.0× 即官方原声；
+// 上限保守取 2.0，再高容易削波失真。此前该参数被写死为 1.0，界面没有任何入口。
+const MINIMAX_VOLUME_MIN = 0.5;
+const MINIMAX_VOLUME_MAX = 2.0;
+export const DEFAULT_SPEECH_VOLUME = 1.5;
+
 function normalizeMinimaxSpeed(speed: number | undefined): number {
     if (typeof speed !== "number" || !Number.isFinite(speed)) return 1.0;
     return Math.min(MINIMAX_SPEED_MAX, Math.max(MINIMAX_SPEED_MIN, speed));
@@ -89,6 +98,11 @@ function normalizeMinimaxPitch(pitch: number | undefined): number {
     return Math.min(MINIMAX_PITCH_MAX, Math.max(MINIMAX_PITCH_MIN, Math.round(pitch)));
 }
 
+function normalizeMinimaxVolume(volume: number | undefined): number {
+    if (typeof volume !== "number" || !Number.isFinite(volume)) return DEFAULT_SPEECH_VOLUME;
+    return Math.min(MINIMAX_VOLUME_MAX, Math.max(MINIMAX_VOLUME_MIN, volume));
+}
+
 async function synthesizeMinimax(text: string, config: VoiceApiConfig, emotion?: string): Promise<Blob | null> {
     if (!config.apiKey) throw new Error("Minimax API Key 未配置");
 
@@ -96,7 +110,7 @@ async function synthesizeMinimax(text: string, config: VoiceApiConfig, emotion?:
     const voiceSetting: Record<string, unknown> = {
         voice_id: config.defaultVoice || "male-qn-qingse",
         speed: normalizeMinimaxSpeed(config.speechSpeed),
-        vol: 1.0,
+        vol: normalizeMinimaxVolume(config.speechVolume),
         pitch: normalizeMinimaxPitch(config.speechPitch),
     };
     const normalizedEmotion = emotion?.trim().toLowerCase();

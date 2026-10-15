@@ -5,7 +5,7 @@ import { Plus, Play, Pause, AlertCircle, RefreshCw, FileEdit, Trash2, X, Check, 
 import { SettingsContext } from "../phone-settings-app";
 import type { VoiceApiConfig } from "@/lib/settings-types";
 import { loadVoiceConfigs, saveVoiceConfigs } from "@/lib/settings-storage";
-import { synthesizeSpeech } from "@/lib/tts-service";
+import { synthesizeSpeech, getTtsVolume, setTtsVolume, DEFAULT_SPEECH_VOLUME } from "@/lib/tts-service";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
 import { Alert } from "@/components/ui/feedback";
@@ -26,6 +26,11 @@ const MINIMAX_PITCH_MIN = -12;
 const MINIMAX_PITCH_MAX = 12;
 const MINIMAX_PITCH_STEP = 1;
 const DEFAULT_SPEECH_PITCH = 0;
+// Minimax voice_setting.vol：合成侧源音量增益。默认 1.5×（说明见 lib/tts-service.ts），
+// 调回 1.0× 即官方原声；上限保守取 2.0×，再高容易削波失真。
+const MINIMAX_VOLUME_MIN = 0.5;
+const MINIMAX_VOLUME_MAX = 2.0;
+const MINIMAX_VOLUME_STEP = 0.1;
 const VOICE_PROVIDER_OPTIONS = [
     { value: "OpenAI", label: "OpenAI TTS" },
     { value: "MinimaxCN", label: "Minimax 语音国内版" },
@@ -43,6 +48,7 @@ const DEFAULT_VOICE_CONFIGS: VoiceApiConfig[] = [
         defaultVoice: "male-qn-qingse",
         speechSpeed: DEFAULT_SPEECH_SPEED,
         speechPitch: DEFAULT_SPEECH_PITCH,
+        speechVolume: DEFAULT_SPEECH_VOLUME,
         enableSTT: true,
         enableTTS: true,
     }
@@ -207,7 +213,10 @@ function normalizeVoiceConfigs(configs: VoiceApiConfig[]): VoiceApiConfig[] {
             const speechPitch = typeof config.speechPitch === "number" && Number.isFinite(config.speechPitch)
                 ? Math.min(MINIMAX_PITCH_MAX, Math.max(MINIMAX_PITCH_MIN, Math.round(config.speechPitch)))
                 : DEFAULT_SPEECH_PITCH;
-            return { ...config, baseUrl, speechSpeed, speechPitch };
+            const speechVolume = typeof config.speechVolume === "number" && Number.isFinite(config.speechVolume)
+                ? Math.min(MINIMAX_VOLUME_MAX, Math.max(MINIMAX_VOLUME_MIN, config.speechVolume))
+                : DEFAULT_SPEECH_VOLUME;
+            return { ...config, baseUrl, speechSpeed, speechPitch, speechVolume };
         });
 }
 
@@ -241,6 +250,10 @@ export function VoiceSettings() {
     const [manualVoiceIds, setManualVoiceIds] = useState<Record<string, boolean>>({});
     const [isLoaded, setIsLoaded] = useState(false);
     const audioRef = useRef<HTMLAudioElement | null>(null);
+    // 应用内播放音量（0-1）：与通话界面右上角小喇叭共用同一个值（lib/tts-service.ts 里
+    // 的 _ttsVolume，localStorage 记忆）。此前只能在通话界面调、滑杆几秒后自动收起，
+    // 误触拖低之后就再也不知道该去哪调回来——这是「语音莫名其妙变小」的常见来源。
+    const [playbackVolume, setPlaybackVolume] = useState(1);
 
     // Fetching states for Voices
     const [isFetching, setIsFetching] = useState<Record<string, boolean>>({});
@@ -261,6 +274,9 @@ export function VoiceSettings() {
         setIsLoaded(true);
     }, []);
 
+    // 打开设置页时同步一次真实播放音量（通话里调过、或上一条语音留下的记忆值）。
+    useEffect(() => { setPlaybackVolume(getTtsVolume()); }, []);
+
     const persist = useCallback((newConfigs: VoiceApiConfig[]) => {
         setConfigs(newConfigs);
         saveVoiceConfigs(newConfigs);
@@ -277,6 +293,8 @@ export function VoiceSettings() {
             model: "speech-2.8-turbo",
             defaultVoice: "male-qn-qingse",
             speechSpeed: DEFAULT_SPEECH_SPEED,
+            speechPitch: DEFAULT_SPEECH_PITCH,
+            speechVolume: DEFAULT_SPEECH_VOLUME,
             enableSTT: true,
             enableTTS: true,
         };
@@ -322,6 +340,7 @@ export function VoiceSettings() {
             model: wasMinimax ? (current?.model || "speech-2.8-turbo") : "speech-2.8-turbo",
             defaultVoice: wasMinimax ? (current?.defaultVoice || "male-qn-qingse") : "male-qn-qingse",
             speechSpeed: wasMinimax ? (current?.speechSpeed ?? DEFAULT_SPEECH_SPEED) : DEFAULT_SPEECH_SPEED,
+            speechVolume: wasMinimax ? (current?.speechVolume ?? DEFAULT_SPEECH_VOLUME) : DEFAULT_SPEECH_VOLUME,
         });
         if (!wasMinimax) {
             setManualModelIds(prev => ({ ...prev, [id]: false }));
@@ -540,6 +559,9 @@ export function VoiceSettings() {
             const url = URL.createObjectURL(blob);
 
             const audio = new Audio(url);
+            // 试听跟随应用内播放音量，便于直接听出「实际对话时有多响」；音量增益(vol)本身
+            // 由服务端合成，试听同样生效，所以这里能直接 A/B 对比 1.0× 与 1.5×。
+            audio.volume = getTtsVolume();
             audioRef.current = audio;
             audio.onended = () => {
                 setPlayingVoiceId(null);
@@ -565,6 +587,31 @@ export function VoiceSettings() {
         <div className="flex flex-col gap-6">
             <div className="flex items-center">
                 <h2 className="m-0 mx-2 ts-28 font-bold italic leading-none text-black">Voice API</h2>
+            </div>
+
+            {/* 角色语音播放音量：与通话界面右上角的小喇叭共用同一个值（localStorage 记忆）。
+                iOS 上角色语音走铃声/语音流，硬件音量键够不着它，只有这个增益说了算；
+                此前仅通话界面能调，这里补一个入口，避免误触拖低后再也找不到。 */}
+            <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between px-1">
+                    <label className="menu-desc">角色语音播放音量</label>
+                    <span className="menu-label font-medium">{Math.round(playbackVolume * 100)}%</span>
+                </div>
+                <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={playbackVolume}
+                    onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setPlaybackVolume(v);
+                        setTtsVolume(v);
+                    }}
+                    className="w-full accent-black"
+                    aria-label="角色语音播放音量"
+                />
+                <span className="menu-desc ml-1">与通话界面右上角喇叭是同一个音量，改动即时生效并长期记忆；下方试听与聊天播报都用它。</span>
             </div>
 
             {configs.length === 0 ? (
@@ -783,6 +830,28 @@ export function VoiceSettings() {
                                                         <span className="absolute whitespace-nowrap" style={{ left: "50%", transform: "translateX(-50%)" }}>0 默认</span>
                                                         <span className="absolute right-1 whitespace-nowrap">+{MINIMAX_PITCH_MAX}</span>
                                                     </div>
+                                                </div>
+                                                <div className="flex flex-col gap-1 mt-1">
+                                                    <div className="flex items-center justify-between px-1">
+                                                        <label className="menu-desc">音量增益 (Volume)</label>
+                                                        <span className="menu-label font-medium">{(config.speechVolume ?? DEFAULT_SPEECH_VOLUME).toFixed(1)}×</span>
+                                                    </div>
+                                                    <input
+                                                        type="range"
+                                                        min={MINIMAX_VOLUME_MIN}
+                                                        max={MINIMAX_VOLUME_MAX}
+                                                        step={MINIMAX_VOLUME_STEP}
+                                                        value={config.speechVolume ?? DEFAULT_SPEECH_VOLUME}
+                                                        onChange={(e) => updateConfig(config.id, { speechVolume: Number(e.target.value) })}
+                                                        className="w-full accent-black"
+                                                        aria-label="Minimax 音量增益"
+                                                    />
+                                                    <div className="relative h-4 px-1 text-xs text-gray-500" aria-hidden="true">
+                                                        <span className="absolute left-1 whitespace-nowrap">{MINIMAX_VOLUME_MIN.toFixed(1)}×</span>
+                                                        <span className="absolute whitespace-nowrap" style={{ left: "33.333%", transform: "translateX(-50%)" }}>1.0× 官方默认</span>
+                                                        <span className="absolute right-1 whitespace-nowrap">{MINIMAX_VOLUME_MAX.toFixed(1)}×</span>
+                                                    </div>
+                                                    <span className="menu-desc ml-1">合成侧的源音量（MiniMax vol）。默认 {DEFAULT_SPEECH_VOLUME.toFixed(1)}× 是给移动端/耳机听感偏小做的补偿；觉得爆音或太吵就调回 1.0×，改完用上面的试听对比。</span>
                                                 </div>
                                                 <div className="flex flex-col gap-1 mt-1">
                                                     <label className="menu-desc ml-1">朗读语言</label>
